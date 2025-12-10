@@ -1,0 +1,9 @@
+# Compiled executables
+server
+
+# Object files
+*.o
+
+# Debug files
+*.dSYM/
+

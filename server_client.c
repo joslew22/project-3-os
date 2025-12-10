@@ -8,8 +8,37 @@ extern pthread_mutex_t rw_lock;
 extern pthread_mutex_t mutex;
 
 extern struct node *head;
+extern struct room *rooms;
+extern struct connection *connections;
 
 extern char *server_MOTD;
+
+// Reader-writer lock helper functions
+void acquire_read_lock() {
+   pthread_mutex_lock(&mutex);
+   numReaders++;
+   if(numReaders == 1) {
+      pthread_mutex_lock(&rw_lock);
+   }
+   pthread_mutex_unlock(&mutex);
+}
+
+void release_read_lock() {
+   pthread_mutex_lock(&mutex);
+   numReaders--;
+   if(numReaders == 0) {
+      pthread_mutex_unlock(&rw_lock);
+   }
+   pthread_mutex_unlock(&mutex);
+}
+
+void acquire_write_lock() {
+   pthread_mutex_lock(&rw_lock);
+}
+
+void release_write_lock() {
+   pthread_mutex_unlock(&rw_lock);
+}
 
 
 /*
@@ -47,21 +76,25 @@ void *client_receive(void *ptr) {
    char tmpbuf[MAXBUFF];  //data temp buffer of 1K  
    char cmd[MAXBUFF], username[20];
    char *arguments[80];
-
-   struct node *currentUser;
     
    send(client  , server_MOTD , strlen(server_MOTD) , 0 ); // Send Welcome Message of the Day.
 
    // Creating the guest user name
-  
    sprintf(username,"guest%d", client);
-   head = insertFirstU(head, client , username);
    
+   // Add user to global list (write operation)
+   acquire_write_lock();
+   head = insertFirstU(head, client, username);
    // Add the GUEST to the DEFAULT ROOM (i.e. Lobby)
+   struct room *lobby = findR(rooms, DEFAULT_ROOM);
+   if(lobby != NULL) {
+      addUserToRoom(lobby, client, username);
+   }
+   release_write_lock();
 
    while (1) {
        
-      if ((received = read(client , buffer, MAXBUFF)) != 0) {
+      if ((received = read(client , buffer, MAXBUFF)) > 0) {
       
             buffer[received] = '\0'; 
             strcpy(cmd, buffer);  
@@ -93,76 +126,212 @@ void *client_receive(void *ptr) {
 
             if(strcmp(arguments[0], "create") == 0)
             {
-               printf("create room: %s\n", arguments[1]); 
-              
-               // perform the operations to create room arg[1]
-              
-              
-               sprintf(buffer, "\nchat>");
-               send(client , buffer , strlen(buffer) , 0 ); // send back to client
+               if(arguments[1] == NULL) {
+                  sprintf(buffer, "Error: Room name required.\nchat>");
+                  send(client, buffer, strlen(buffer), 0);
+               } else {
+                  printf("create room: %s\n", arguments[1]);
+                  
+                  acquire_write_lock();
+                  struct room *existing = findR(rooms, arguments[1]);
+                  if(existing == NULL) {
+                     rooms = insertFirstR(rooms, arguments[1]);
+                     sprintf(buffer, "Room '%s' created successfully.\nchat>", arguments[1]);
+                  } else {
+                     sprintf(buffer, "Error: Room '%s' already exists.\nchat>", arguments[1]);
+                  }
+                  release_write_lock();
+                  
+                  send(client, buffer, strlen(buffer), 0);
+               }
             }
             else if (strcmp(arguments[0], "join") == 0)
             {
-               printf("join room: %s\n", arguments[1]);  
-
-               // perform the operations to join room arg[1]
-              
-               sprintf(buffer, "\nchat>");
-               send(client , buffer , strlen(buffer) , 0 ); // send back to client
+               if(arguments[1] == NULL) {
+                  sprintf(buffer, "Error: Room name required.\nchat>");
+                  send(client, buffer, strlen(buffer), 0);
+               } else {
+                  printf("join room: %s\n", arguments[1]);
+                  
+                  acquire_write_lock();
+                  struct room *room = findR(rooms, arguments[1]);
+                  struct node *user = findUBySocket(head, client);
+                  
+                  if(room == NULL) {
+                     sprintf(buffer, "Error: Room '%s' does not exist.\nchat>", arguments[1]);
+                  } else if(user == NULL) {
+                     sprintf(buffer, "Error: User not found.\nchat>");
+                  } else {
+                     addUserToRoom(room, client, user->username);
+                     sprintf(buffer, "Joined room '%s'.\nchat>", arguments[1]);
+                  }
+                  release_write_lock();
+                  
+                  send(client, buffer, strlen(buffer), 0);
+               }
             }
             else if (strcmp(arguments[0], "leave") == 0)
             {
-               printf("leave room: %s\n", arguments[1]); 
-
-               // perform the operations to leave room arg[1]
-
-               sprintf(buffer, "\nchat>");
-               send(client , buffer , strlen(buffer) , 0 ); // send back to client
+               if(arguments[1] == NULL) {
+                  sprintf(buffer, "Error: Room name required.\nchat>");
+                  send(client, buffer, strlen(buffer), 0);
+               } else {
+                  printf("leave room: %s\n", arguments[1]);
+                  
+                  acquire_write_lock();
+                  struct room *room = findR(rooms, arguments[1]);
+                  
+                  if(room == NULL) {
+                     sprintf(buffer, "Error: Room '%s' does not exist.\nchat>", arguments[1]);
+                  } else if(strcmp(room->roomname, DEFAULT_ROOM) == 0) {
+                     sprintf(buffer, "Error: Cannot leave the default room '%s'.\nchat>", DEFAULT_ROOM);
+                  } else {
+                     removeUserFromRoom(room, client);
+                     sprintf(buffer, "Left room '%s'.\nchat>", arguments[1]);
+                  }
+                  release_write_lock();
+                  
+                  send(client, buffer, strlen(buffer), 0);
+               }
             } 
             else if (strcmp(arguments[0], "connect") == 0)
             {
-               printf("connect to user: %s \n", arguments[1]);
-
-               // perform the operations to connect user with socket = client from arg[1]
-
-               sprintf(buffer, "\nchat>");
-               send(client , buffer , strlen(buffer) , 0 ); // send back to client
+               if(arguments[1] == NULL) {
+                  sprintf(buffer, "Error: Username required.\nchat>");
+                  send(client, buffer, strlen(buffer), 0);
+               } else {
+                  printf("connect to user: %s\n", arguments[1]);
+                  
+                  acquire_write_lock();
+                  struct node *target_user = findU(head, arguments[1]);
+                  struct node *current_user = findUBySocket(head, client);
+                  
+                  if(target_user == NULL) {
+                     sprintf(buffer, "Error: User '%s' not found.\nchat>", arguments[1]);
+                  } else if(current_user == NULL) {
+                     sprintf(buffer, "Error: Current user not found.\nchat>");
+                  } else if(client == target_user->socket) {
+                     sprintf(buffer, "Error: Cannot connect to yourself.\nchat>");
+                  } else if(areConnected(connections, client, target_user->socket)) {
+                     sprintf(buffer, "Already connected to '%s'.\nchat>", arguments[1]);
+                  } else {
+                     connections = insertFirstC(connections, client, target_user->socket);
+                     sprintf(buffer, "Connected to '%s'.\nchat>", arguments[1]);
+                  }
+                  release_write_lock();
+                  
+                  send(client, buffer, strlen(buffer), 0);
+               }
             }
             else if (strcmp(arguments[0], "disconnect") == 0)
-            {             
-               printf("disconnect from user: %s\n", arguments[1]);
-               
-               // perform the operations to disconnect user with socket = client from arg[1]
-                
-               sprintf(buffer, "\nchat>");
-               send(client , buffer , strlen(buffer) , 0 ); // send back to client
+            {
+               if(arguments[1] == NULL) {
+                  sprintf(buffer, "Error: Username required.\nchat>");
+                  send(client, buffer, strlen(buffer), 0);
+               } else {
+                  printf("disconnect from user: %s\n", arguments[1]);
+                  
+                  acquire_write_lock();
+                  struct node *target_user = findU(head, arguments[1]);
+                  
+                  if(target_user == NULL) {
+                     sprintf(buffer, "Error: User '%s' not found.\nchat>", arguments[1]);
+                  } else if(!areConnected(connections, client, target_user->socket)) {
+                     sprintf(buffer, "Error: Not connected to '%s'.\nchat>", arguments[1]);
+                  } else {
+                     connections = removeConnection(connections, client, target_user->socket);
+                     sprintf(buffer, "Disconnected from '%s'.\nchat>", arguments[1]);
+                  }
+                  release_write_lock();
+                  
+                  send(client, buffer, strlen(buffer), 0);
+               }
             }                  
             else if (strcmp(arguments[0], "rooms") == 0)
             {
-                printf("List all the rooms\n");
-              
-                // must add put list of users into buffer to send to client
-       
-              
-                strcat(buffer, "\nchat>");
-                send(client , buffer , strlen(buffer) , 0 ); // send back to client                            
+               printf("List all the rooms\n");
+               
+               acquire_read_lock();
+               strcpy(buffer, "Rooms:\n");
+               struct room *current = rooms;
+               int count = 0;
+               while(current != NULL) {
+                  char room_info[100];
+                  sprintf(room_info, "  - %s\n", current->roomname);
+                  strcat(buffer, room_info);
+                  current = current->next;
+                  count++;
+               }
+               if(count == 0) {
+                  strcat(buffer, "  (no rooms)\n");
+               }
+               release_read_lock();
+               
+               strcat(buffer, "chat>");
+               send(client, buffer, strlen(buffer), 0);
             }   
             else if (strcmp(arguments[0], "users") == 0)
             {
-                printf("List all the users\n");
-              
-                // must add put list of users into buffer to send to client
-                
-                strcat(buffer, "\nchat>");
-                send(client , buffer , strlen(buffer) , 0 ); // send back to client
+               printf("List all the users\n");
+               
+               acquire_read_lock();
+               strcpy(buffer, "Users:\n");
+               struct node *current = head;
+               int count = 0;
+               while(current != NULL) {
+                  char user_info[100];
+                  sprintf(user_info, "  - %s\n", current->username);
+                  strcat(buffer, user_info);
+                  current = current->next;
+                  count++;
+               }
+               if(count == 0) {
+                  strcat(buffer, "  (no users)\n");
+               }
+               release_read_lock();
+               
+               strcat(buffer, "chat>");
+               send(client, buffer, strlen(buffer), 0);
             }                           
             else if (strcmp(arguments[0], "login") == 0)
             {
-                
-                //rename their guestID to username. Make sure any room or DMs have the updated username.
-                
-                sprintf(buffer, "\nchat>");
-                send(client , buffer , strlen(buffer) , 0 ); // send back to client
+               if(arguments[1] == NULL) {
+                  sprintf(buffer, "Error: Username required.\nchat>");
+                  send(client, buffer, strlen(buffer), 0);
+               } else {
+                  printf("login: %s\n", arguments[1]);
+                  
+                  acquire_write_lock();
+                  struct node *existing_user = findU(head, arguments[1]);
+                  struct node *current_user = findUBySocket(head, client);
+                  
+                  if(existing_user != NULL && existing_user->socket != client) {
+                     sprintf(buffer, "Error: Username '%s' is already taken.\nchat>", arguments[1]);
+                  } else if(current_user == NULL) {
+                     sprintf(buffer, "Error: Current user not found.\nchat>");
+                  } else {
+                     char old_username[30];
+                     strcpy(old_username, current_user->username);
+                     
+                     // Update username in user list
+                     updateUsername(head, client, arguments[1]);
+                     
+                     // Update username in all rooms
+                     struct room *room = rooms;
+                     while(room != NULL) {
+                        struct node *room_user = findUBySocket(room->users, client);
+                        if(room_user != NULL) {
+                           strcpy(room_user->username, arguments[1]);
+                        }
+                        room = room->next;
+                     }
+                     
+                     sprintf(buffer, "Logged in as '%s'.\nchat>", arguments[1]);
+                  }
+                  release_write_lock();
+                  
+                  send(client, buffer, strlen(buffer), 0);
+               }
             } 
             else if (strcmp(arguments[0], "help") == 0 )
             {
@@ -171,9 +340,27 @@ void *client_receive(void *ptr) {
             }
             else if (strcmp(arguments[0], "exit") == 0 || strcmp(arguments[0], "logout") == 0)
             {
-    
-                //Remove the initiating user from all rooms and direct connections, then close the socket descriptor.
-                close(client);
+               printf("User exiting\n");
+               
+               acquire_write_lock();
+               
+               // Remove user from all rooms
+               struct room *room = rooms;
+               while(room != NULL) {
+                  removeUserFromRoom(room, client);
+                  room = room->next;
+               }
+               
+               // Remove all direct connections
+               connections = removeAllConnections(connections, client);
+               
+               // Remove user from global list
+               head = deleteU(head, client);
+               
+               release_write_lock();
+               
+               close(client);
+               return NULL;
             }                         
             else { 
                  /////////////////////////////////////////////////////////////
@@ -182,23 +369,123 @@ void *client_receive(void *ptr) {
                  // send a message in the following format followed by the promt chat> to the appropriate receipients based on rooms, DMs
                  // ::[userfrom]> <message>
               
-                 sprintf(tmpbuf,"\n::%s> %s\nchat>", "PUTUSERFROM", sbuffer);
+                 acquire_read_lock();
+                 
+                 struct node *sender = findUBySocket(head, client);
+                 if(sender == NULL) {
+                    release_read_lock();
+                    continue;
+                 }
+                 
+                 sprintf(tmpbuf,"\n::%s> %s\nchat>", sender->username, sbuffer);
                  strcpy(sbuffer, tmpbuf);
-                       
-                 currentUser = head;
-                 while(currentUser != NULL) {
-                     
-                     if(client != currentUser->socket){  // dont send to yourself 
-                       
-                         send(currentUser->socket , sbuffer , strlen(sbuffer) , 0 ); 
-                     }
-                     currentUser = currentUser->next;
+                 
+                 // Create a set of recipient sockets (using a simple array)
+                 int recipients[100];
+                 int recipient_count = 0;
+                 
+                 // Find all users in the same rooms as the sender
+                 struct room *room = rooms;
+                 while(room != NULL) {
+                    if(isUserInRoom(room, client)) {
+                       struct node *room_user = room->users;
+                       while(room_user != NULL) {
+                          if(room_user->socket != client) {  // Don't send to yourself
+                             // Check if already added
+                             int already_added = 0;
+                             for(int i = 0; i < recipient_count; i++) {
+                                if(recipients[i] == room_user->socket) {
+                                   already_added = 1;
+                                   break;
+                                }
+                             }
+                             if(!already_added) {
+                                recipients[recipient_count++] = room_user->socket;
+                             }
+                          }
+                          room_user = room_user->next;
+                       }
+                    }
+                    room = room->next;
+                 }
+                 
+                 // Find all users directly connected (DM) to the sender
+                 struct connection *conn = connections;
+                 while(conn != NULL) {
+                    int target_socket = -1;
+                    if(conn->socket1 == client) {
+                       target_socket = conn->socket2;
+                    } else if(conn->socket2 == client) {
+                       target_socket = conn->socket1;
+                    }
+                    
+                    if(target_socket != -1) {
+                       // Check if already added
+                       int already_added = 0;
+                       for(int i = 0; i < recipient_count; i++) {
+                          if(recipients[i] == target_socket) {
+                             already_added = 1;
+                             break;
+                          }
+                       }
+                       if(!already_added) {
+                          recipients[recipient_count++] = target_socket;
+                       }
+                    }
+                    conn = conn->next;
+                 }
+                 
+                 release_read_lock();
+                 
+                 // Send message to all recipients
+                 for(int i = 0; i < recipient_count; i++) {
+                    send(recipients[i], sbuffer, strlen(sbuffer), 0);
                  }
           
             }
  
          memset(buffer, 0, sizeof(1024));
+      } else if (received == 0) {
+         // Client disconnected unexpectedly
+         printf("Client disconnected unexpectedly (socket: %d)\n", client);
+         
+         acquire_write_lock();
+         
+         // Remove user from all rooms
+         struct room *room = rooms;
+         while(room != NULL) {
+            removeUserFromRoom(room, client);
+            room = room->next;
+         }
+         
+         // Remove all direct connections
+         connections = removeAllConnections(connections, client);
+         
+         // Remove user from global list
+         head = deleteU(head, client);
+         
+         release_write_lock();
+         
+         close(client);
+         return NULL;
+      } else {
+         // Error reading from socket
+         perror("read error");
+         break;
       }
    }
+   
+   // Cleanup on exit
+   acquire_write_lock();
+   struct room *room = rooms;
+   while(room != NULL) {
+      removeUserFromRoom(room, client);
+      room = room->next;
+   }
+   connections = removeAllConnections(connections, client);
+   head = deleteU(head, client);
+   release_write_lock();
+   
+   close(client);
    return NULL;
 }

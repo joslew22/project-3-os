@@ -15,7 +15,9 @@ pthread_mutex_t rw_lock = PTHREAD_MUTEX_INITIALIZER;  // read/write lock
 
 char const *server_MOTD = "Thanks for connecting to the BisonChat Server.\n\nchat>";
 
-struct node *head = NULL;
+struct node *head = NULL;  // List of all users
+struct room *rooms = NULL;  // List of all rooms
+struct connection *connections = NULL;  // List of all direct connections
 
 int main(int argc, char **argv) {
 
@@ -24,8 +26,8 @@ int main(int argc, char **argv) {
    //////////////////////////////////////////////////////
    // create the default room for all clients to join when 
    // initially connecting
-   //  
-   //    TODO
+   rooms = insertFirstR(rooms, DEFAULT_ROOM);
+   printf("Default room '%s' created.\n", DEFAULT_ROOM);
    //////////////////////////////////////////////////////
 
    // Open server socket
@@ -53,7 +55,7 @@ int main(int argc, char **argv) {
 }
 
 
-int get_server_socket(char *hostname, char *port) {
+int get_server_socket() {
     int opt = TRUE;   
     int master_socket;
     struct sockaddr_in address; 
@@ -117,15 +119,61 @@ int accept_client(int serv_sock) {
 
 /* Handle SIGINT (CTRL+C) */
 void sigintHandler(int sig_num) {
-   printf("Error:Forced Exit.\n");
+   printf("\nShutting down server gracefully...\n");
 
    //////////////////////////////////////////////////////////
    //Closing client sockets and freeing memory from user list
-   //
-   //       TODO
    //////////////////////////////////////////////////////////
 
    printf("--------CLOSING ACTIVE USERS--------\n");
+   
+   // Acquire write lock to ensure exclusive access
+   pthread_mutex_lock(&rw_lock);
+   
+   // Close all client sockets
+   struct node *current = head;
+   while(current != NULL) {
+      printf("Closing socket %d (user: %s)\n", current->socket, current->username);
+      close(current->socket);
+      current = current->next;
+   }
+
+   // Free all users
+   current = head;
+   while(current != NULL) {
+      struct node *temp = current;
+      current = current->next;
+      free(temp);
+   }
+   head = NULL;
+
+   // Free all rooms and their user lists
+   struct room *room_current = rooms;
+   while(room_current != NULL) {
+      struct node *user = room_current->users;
+      while(user != NULL) {
+         struct node *temp = user;
+         user = user->next;
+         free(temp);
+      }
+      struct room *temp = room_current;
+      room_current = room_current->next;
+      free(temp);
+   }
+   rooms = NULL;
+
+   // Free all connections
+   struct connection *conn_current = connections;
+   while(conn_current != NULL) {
+      struct connection *temp = conn_current;
+      conn_current = conn_current->next;
+      free(temp);
+   }
+   connections = NULL;
+
+   pthread_mutex_unlock(&rw_lock);
+
+   printf("--------SERVER SHUTDOWN COMPLETE--------\n");
 
    close(chat_serv_sock_fd);
    exit(0);
