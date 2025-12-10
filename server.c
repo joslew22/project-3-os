@@ -48,6 +48,7 @@ int main(int argc, char **argv) {
       if(new_client != -1) {
          pthread_t new_client_thread;
          pthread_create(&new_client_thread, NULL, client_receive, (void *)&new_client);
+         pthread_detach(new_client_thread);  // Detach thread to prevent resource leaks
       }
    }
 

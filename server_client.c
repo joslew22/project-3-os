@@ -96,7 +96,18 @@ void *client_receive(void *ptr) {
        
       if ((received = read(client , buffer, MAXBUFF)) > 0) {
       
+            // Ensure null termination
+            if(received >= MAXBUFF) {
+               received = MAXBUFF - 1;
+            }
             buffer[received] = '\0'; 
+            
+            // Remove trailing newline/carriage return if present
+            while(received > 0 && (buffer[received-1] == '\n' || buffer[received-1] == '\r')) {
+               buffer[received-1] = '\0';
+               received--;
+            }
+            
             strcpy(cmd, buffer);  
             strcpy(sbuffer, buffer);
          
@@ -104,18 +115,34 @@ void *client_receive(void *ptr) {
             // we got some data from a client
 
             // 1. Tokenize the input in buf (split it on whitespace)
+            // Initialize arguments array
+            for(i = 0; i < 80; i++) {
+               arguments[i] = NULL;
+            }
 
             // get the first token 
-
-             arguments[0] = strtok(cmd, delimiters);
+            arguments[0] = strtok(cmd, delimiters);
+            if(arguments[0] != NULL) {
+               // Trim the first argument in place (trimwhitespace modifies the string and may return a shifted pointer)
+               arguments[0] = trimwhitespace(arguments[0]);
+            }
 
             // walk through other tokens 
-
-             i = 0;
-             while( arguments[i] != NULL ) {
-                arguments[++i] = strtok(NULL, delimiters); 
-                strcpy(arguments[i-1], trimwhitespace(arguments[i-1]));
-             } 
+            i = 0;
+            while(arguments[i] != NULL && i < 79) {
+               arguments[++i] = strtok(NULL, delimiters);
+               if(arguments[i] != NULL) {
+                  // Trim each argument in place (trimwhitespace modifies the string and may return a shifted pointer)
+                  arguments[i] = trimwhitespace(arguments[i]);
+               }
+            }
+            
+            // Validate argument count (prevent buffer overflow)
+            if(i >= 80) {
+               sprintf(buffer, "Error: Too many arguments.\nchat>");
+               send(client, buffer, strlen(buffer), 0);
+               continue;
+            } 
 
              // Arg[0] = command
              // Arg[1] = user or room
@@ -128,6 +155,9 @@ void *client_receive(void *ptr) {
             {
                if(arguments[1] == NULL) {
                   sprintf(buffer, "Error: Room name required.\nchat>");
+                  send(client, buffer, strlen(buffer), 0);
+               } else if(strlen(arguments[1]) >= 50) {
+                  sprintf(buffer, "Error: Room name too long (max 49 characters).\nchat>");
                   send(client, buffer, strlen(buffer), 0);
                } else {
                   printf("create room: %s\n", arguments[1]);
@@ -149,6 +179,9 @@ void *client_receive(void *ptr) {
             {
                if(arguments[1] == NULL) {
                   sprintf(buffer, "Error: Room name required.\nchat>");
+                  send(client, buffer, strlen(buffer), 0);
+               } else if(strlen(arguments[1]) >= 50) {
+                  sprintf(buffer, "Error: Room name too long (max 49 characters).\nchat>");
                   send(client, buffer, strlen(buffer), 0);
                } else {
                   printf("join room: %s\n", arguments[1]);
@@ -175,6 +208,9 @@ void *client_receive(void *ptr) {
                if(arguments[1] == NULL) {
                   sprintf(buffer, "Error: Room name required.\nchat>");
                   send(client, buffer, strlen(buffer), 0);
+               } else if(strlen(arguments[1]) >= 50) {
+                  sprintf(buffer, "Error: Room name too long (max 49 characters).\nchat>");
+                  send(client, buffer, strlen(buffer), 0);
                } else {
                   printf("leave room: %s\n", arguments[1]);
                   
@@ -198,6 +234,9 @@ void *client_receive(void *ptr) {
             {
                if(arguments[1] == NULL) {
                   sprintf(buffer, "Error: Username required.\nchat>");
+                  send(client, buffer, strlen(buffer), 0);
+               } else if(strlen(arguments[1]) >= 30) {
+                  sprintf(buffer, "Error: Username too long (max 29 characters).\nchat>");
                   send(client, buffer, strlen(buffer), 0);
                } else {
                   printf("connect to user: %s\n", arguments[1]);
@@ -227,6 +266,9 @@ void *client_receive(void *ptr) {
             {
                if(arguments[1] == NULL) {
                   sprintf(buffer, "Error: Username required.\nchat>");
+                  send(client, buffer, strlen(buffer), 0);
+               } else if(strlen(arguments[1]) >= 30) {
+                  sprintf(buffer, "Error: Username too long (max 29 characters).\nchat>");
                   send(client, buffer, strlen(buffer), 0);
                } else {
                   printf("disconnect from user: %s\n", arguments[1]);
@@ -298,6 +340,9 @@ void *client_receive(void *ptr) {
                if(arguments[1] == NULL) {
                   sprintf(buffer, "Error: Username required.\nchat>");
                   send(client, buffer, strlen(buffer), 0);
+               } else if(strlen(arguments[1]) >= 30) {
+                  sprintf(buffer, "Error: Username too long (max 29 characters).\nchat>");
+                  send(client, buffer, strlen(buffer), 0);
                } else {
                   printf("login: %s\n", arguments[1]);
                   
@@ -335,7 +380,7 @@ void *client_receive(void *ptr) {
             } 
             else if (strcmp(arguments[0], "help") == 0 )
             {
-                sprintf(buffer, "login <username> - \"login with username\" \ncreate <room> - \"create a room\" \njoin <room> - \"join a room\" \nleave <room> - \"leave a room\" \nusers - \"list all users\" \nrooms -  \"list all rooms\" \nconnect <user> - \"connect to user\" \nexit - \"exit chat\" \n");
+                sprintf(buffer, "login <username> - \"login with username\" \ncreate <room> - \"create a room\" \njoin <room> - \"join a room\" \nleave <room> - \"leave a room\" \nusers - \"list all users\" \nrooms -  \"list all rooms\" \nconnect <user> - \"connect to user (DM)\" \ndisconnect <user> - \"disconnect from user\" \nexit - \"exit chat\" \nlogout - \"exit chat\" \n");
                 send(client , buffer , strlen(buffer) , 0 ); // send back to client 
             }
             else if (strcmp(arguments[0], "exit") == 0 || strcmp(arguments[0], "logout") == 0)
